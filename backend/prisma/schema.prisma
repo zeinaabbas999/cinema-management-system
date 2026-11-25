@@ -1,0 +1,478 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================
+// ENUMS
+// ==========================
+
+enum UserRole {
+  CUSTOMER
+  STAFF
+  ADMIN
+}
+
+enum MovieStatus {
+  COMING_SOON
+  NOW_SHOWING
+  ARCHIVED
+}
+
+enum ShowtimeStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum SeatType {
+  STANDARD
+  PREMIUM
+  ACCESSIBLE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+enum AllocationStatus {
+  HELD
+  CONFIRMED
+  OFFERED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  SIMULATED_CARD
+  SIMULATED_WALLET
+}
+
+enum SnackOrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  COLLECTED
+  CANCELLED
+}
+
+enum WaitlistStatus {
+  WAITING
+  OFFERED
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  WAITLIST_OFFER
+  OFFER_EXPIRED
+  SNACK_READY
+  GENERAL
+}
+
+// ==========================
+// 1. USER
+// ==========================
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(CUSTOMER)
+  isActive     Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings      Booking[]
+  waitlist      WaitlistEntry[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@index([role])
+}
+
+// ==========================
+// 2. MOVIE
+// ==========================
+
+model Movie {
+  id          String  @id @default(uuid())
+  title       String
+  description String?
+  durationMin Int
+
+  genre      String?
+  language   String?
+  ageRating  String?
+  posterUrl  String?
+  trailerUrl String?
+
+  status MovieStatus @default(COMING_SOON)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  showtimes Showtime[]
+
+  @@index([status])
+  @@index([title])
+}
+
+// ==========================
+// 3. HALL
+// ==========================
+
+model Hall {
+  id       String  @id @default(uuid())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  seats     Seat[]
+  showtimes Showtime[]
+}
+
+// ==========================
+// 4. SEAT
+// ==========================
+
+model Seat {
+  id         String @id @default(uuid())
+  hallId     String
+  rowLabel   String
+  seatNumber Int
+
+  type     SeatType @default(STANDARD)
+  isActive Boolean  @default(true)
+
+  hall         Hall             @relation(fields: [hallId], references: [id], onDelete: Restrict)
+  bookingSeats BookingSeat[]
+  allocations  SeatAllocation[]
+
+  @@unique([hallId, rowLabel, seatNumber])
+  @@index([hallId])
+}
+
+// ==========================
+// 5. SHOWTIME
+// ==========================
+
+model Showtime {
+  id      String @id @default(uuid())
+  movieId String
+  hallId  String
+
+  startTime DateTime
+  endTime   DateTime
+
+  basePrice Decimal @db.Decimal(10, 2)
+
+  status ShowtimeStatus @default(SCHEDULED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movie Movie @relation(fields: [movieId], references: [id], onDelete: Restrict)
+  hall  Hall  @relation(fields: [hallId], references: [id], onDelete: Restrict)
+
+  bookings    Booking[]
+  allocations SeatAllocation[]
+  waitlist    WaitlistEntry[]
+
+  @@unique([hallId, startTime])
+  @@index([movieId, startTime])
+  @@index([hallId, startTime])
+}
+
+// ==========================
+// 6. BOOKING
+// ==========================
+
+model Booking {
+  id         String @id @default(uuid())
+  userId     String
+  showtimeId String
+
+  status BookingStatus @default(PENDING)
+
+  totalAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  holdExpiresAt DateTime?
+  cancelledAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  showtime Showtime @relation(fields: [showtimeId], references: [id], onDelete: Restrict)
+
+  bookingSeats BookingSeat[]
+  allocations  SeatAllocation[]
+  payments     Payment[]
+  snackOrder   SnackOrder?
+
+  @@index([userId, createdAt])
+  @@index([showtimeId, status])
+  @@index([status, holdExpiresAt])
+}
+
+// ==========================
+// 7. BOOKING SEAT
+// ==========================
+
+model BookingSeat {
+  id        String @id @default(uuid())
+  bookingId String
+  seatId    String
+
+  priceAtBooking Decimal @db.Decimal(10, 2)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  seat    Seat    @relation(fields: [seatId], references: [id], onDelete: Restrict)
+
+  ticket Ticket?
+
+  @@unique([bookingId, seatId])
+  @@index([seatId])
+}
+
+// ==========================
+// 8. SEAT ALLOCATION
+// ==========================
+
+model SeatAllocation {
+  id         String @id @default(uuid())
+  showtimeId String
+  seatId     String
+
+  bookingId       String?
+  waitlistOfferId String?
+
+  status    AllocationStatus
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  showtime Showtime @relation(fields: [showtimeId], references: [id], onDelete: Cascade)
+  seat     Seat     @relation(fields: [seatId], references: [id], onDelete: Restrict)
+
+  booking       Booking?       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  waitlistOffer WaitlistOffer? @relation(fields: [waitlistOfferId], references: [id], onDelete: Cascade)
+
+  @@unique([showtimeId, seatId])
+  @@index([bookingId])
+  @@index([waitlistOfferId])
+  @@index([status, expiresAt])
+}
+
+// ==========================
+// 9. PAYMENT
+// ==========================
+
+model Payment {
+  id        String @id @default(uuid())
+  bookingId String
+
+  amount Decimal @db.Decimal(10, 2)
+
+  method PaymentMethod
+  status PaymentStatus @default(PENDING)
+
+  transactionRef String?   @unique
+  paidAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId])
+}
+
+// ==========================
+// 10. TICKET
+// ==========================
+
+model Ticket {
+  id            String @id @default(uuid())
+  bookingSeatId String @unique
+
+  ticketCode  String    @unique
+  issuedAt    DateTime  @default(now())
+  checkedInAt DateTime?
+
+  bookingSeat BookingSeat @relation(fields: [bookingSeatId], references: [id], onDelete: Restrict)
+}
+
+// ==========================
+// 11. SNACK
+// ==========================
+
+model Snack {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  imageUrl    String?
+
+  price         Decimal @db.Decimal(10, 2)
+  stockQuantity Int     @default(0)
+  isAvailable   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderItems SnackOrderItem[]
+}
+
+// ==========================
+// 12. SNACK ORDER
+// ==========================
+
+model SnackOrder {
+  id        String @id @default(uuid())
+  bookingId String @unique
+
+  status SnackOrderStatus @default(PENDING)
+
+  totalAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  items SnackOrderItem[]
+
+  @@index([status])
+}
+
+// ==========================
+// 13. SNACK ORDER ITEM
+// ==========================
+
+model SnackOrderItem {
+  id           String @id @default(uuid())
+  snackOrderId String
+  snackId      String
+
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+
+  snackOrder SnackOrder @relation(fields: [snackOrderId], references: [id], onDelete: Cascade)
+  snack      Snack      @relation(fields: [snackId], references: [id], onDelete: Restrict)
+
+  @@unique([snackOrderId, snackId])
+}
+
+// ==========================
+// 14. WAITLIST ENTRY
+// ==========================
+
+model WaitlistEntry {
+  id         String @id @default(uuid())
+  userId     String
+  showtimeId String
+
+  seatCount         Int
+  preferredSeatType SeatType?
+
+  status WaitlistStatus @default(WAITING)
+
+  joinedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  showtime Showtime @relation(fields: [showtimeId], references: [id], onDelete: Restrict)
+
+  offers WaitlistOffer[]
+
+  @@index([showtimeId, status, joinedAt])
+  @@index([userId])
+}
+
+// ==========================
+// 15. WAITLIST OFFER
+// ==========================
+
+model WaitlistOffer {
+  id              String @id @default(uuid())
+  waitlistEntryId String
+
+  status OfferStatus @default(PENDING)
+
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  respondedAt DateTime?
+
+  waitlistEntry WaitlistEntry @relation(fields: [waitlistEntryId], references: [id], onDelete: Restrict)
+
+  allocations SeatAllocation[]
+
+  @@index([waitlistEntryId, status])
+  @@index([status, expiresAt])
+}
+
+// ==========================
+// 16. NOTIFICATION
+// ==========================
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+
+  type    NotificationType
+  title   String
+  message String
+
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, isRead, createdAt])
+}
+
+// ==========================
+// 17. AUDIT LOG
+// ==========================
+
+model AuditLog {
+  id      String  @id @default(uuid())
+  actorId String?
+
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+}
