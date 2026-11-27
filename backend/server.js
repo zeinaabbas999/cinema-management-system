@@ -145,6 +145,8 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   return res.json({ user: req.user });
 });
 
+app.use("/api/movies", require("./movies"));
+
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
