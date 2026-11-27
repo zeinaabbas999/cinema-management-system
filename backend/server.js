@@ -144,7 +144,162 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/auth/me", requireAuth, (req, res) => {
   return res.json({ user: req.user });
 });
+const CANCELLATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+app.post("/api/bookings/:id/cancel", requireAuth, async (req, res) => {
+  const bookingId =
+    typeof req.params.id === "string" ? req.params.id.trim() : "";
+
+  if (!bookingId) {
+    return res.status(400).json({ message: "Invalid booking ID." });
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: {
+          showtime: {
+            include: {
+              movie: { select: { title: true } },
+            },
+          },
+          payments: true,
+        },
+      });
+
+      if (!booking) {
+        return { error: { status: 404, message: "Booking not found." } };
+      }
+
+      const isOwner = booking.userId === req.user.id;
+      const isStaffOrAdmin =
+        req.user.role === "STAFF" || req.user.role === "ADMIN";
+
+      if (!isOwner && !isStaffOrAdmin) {
+        return {
+          error: {
+            status: 403,
+            message: "You are not allowed to cancel this booking.",
+          },
+        };
+      }
+
+      if (booking.status !== "PENDING" && booking.status !== "CONFIRMED") {
+        return {
+          error: {
+            status: 409,
+            message: `Cannot cancel a booking with status ${booking.status}.`,
+          },
+        };
+      }
+
+      if (booking.showtime.status !== "SCHEDULED") {
+        return {
+          error: {
+            status: 409,
+            message: "Cannot cancel a booking for an unavailable showtime.",
+          },
+        };
+      }
+
+      const now = new Date();
+      const msUntilShowtime =
+        new Date(booking.showtime.startTime).getTime() - now.getTime();
+
+      if (msUntilShowtime < CANCELLATION_WINDOW_MS) {
+        return {
+          error: {
+            status: 400,
+            message:
+              "Bookings can only be cancelled at least 24 hours before the showtime.",
+          },
+        };
+      }
+
+      const cancelledBooking = await tx.booking.update({
+        where: { id: booking.id },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: now,
+        },
+        select: {
+          id: true,
+          userId: true,
+          showtimeId: true,
+          status: true,
+          totalAmount: true,
+          cancelledAt: true,
+        },
+      });
+
+      const releasedAllocations = await tx.seatAllocation.deleteMany({
+        where: { bookingId: booking.id },
+      });
+
+      await tx.payment.updateMany({
+        where: { bookingId: booking.id, status: "SUCCESS" },
+        data: { status: "REFUNDED" },
+      });
+
+      await tx.payment.updateMany({
+        where: { bookingId: booking.id, status: "PENDING" },
+        data: { status: "FAILED" },
+      });
+
+      const movieTitle = booking.showtime.movie?.title ?? "your movie";
+      const notification = await tx.notification.create({
+        data: {
+          userId: booking.userId,
+          type: "BOOKING_CANCELLED",
+          title: "Booking Cancelled",
+          message: `Your booking (${booking.id}) for ${movieTitle} has been cancelled and your seats have been released.`,
+        },
+        select: {
+          id: true,
+          userId: true,
+          type: true,
+          title: true,
+          message: true,
+          isRead: true,
+          createdAt: true,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user.id,
+          action: "BOOKING_CANCELLED",
+          entityType: "Booking",
+          entityId: booking.id,
+          details: {
+            releasedSeats: releasedAllocations.count,
+            notificationId: notification.id,
+          },
+        },
+      });
+
+      return {
+        data: {
+          booking: cancelledBooking,
+          releasedSeatsCount: releasedAllocations.count,
+          notification,
+        },
+      };
+    });
+
+    if (result.error) {
+      return res
+        .status(result.error.status)
+        .json({ message: result.error.message });
+    }
+
+    return res.status(200).json(result.data);
+  } catch (error) {
+    console.error("Booking cancellation failed:", error.code ?? error.name);
+    return res.status(500).json({ message: "Could not cancel the booking." });
+  }
+});
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
