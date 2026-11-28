@@ -146,6 +146,7 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 });
 
 app.use("/api/movies", require("./movies"));
+app.use("/api/admin/movies", require("./adminMovies"));
 
 if (require.main === module) {
   app.listen(PORT, () => {
